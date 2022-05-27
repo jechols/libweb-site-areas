@@ -1,0 +1,190 @@
+<?php
+
+/**
+ * @file
+ * Site area field management
+ */
+
+use Drupal\Core\Form\FormStateInterface;
+use Drupal\Core\Session\AccountInterface;
+use Drupal\Core\Entity\EntityInterface;
+use Drupal\Core\Access\AccessResult;
+use Drupal\node\Entity\Node;
+use Drupal\node\NodeForm;
+
+const _SITE_AREAS_FIELD_NAME = 'field_site_areas__site_area';
+
+/**
+ * Implement hook_form_FORM_ID_alter for preventing non-admins from changing
+ * their site areas and limiting admins to selecting only top-level areas.
+ */
+function site_areas_form_user_form_alter(&$form, FormStateInterface $form_state, $form_id) {
+  // Non-admins just get booted and the field is fried
+  $user = \Drupal\user\Entity\User::load(\Drupal::currentUser()->id());
+  if (!$user->hasPermission('administer users')) {
+    $form['field_allowed_areas'] = NULL;
+    return;
+  }
+
+  // Remove any elements that have a parent so that nobody's having to choose
+  // ten areas just to give somebody access to one of our "hierarchical"
+  // content areas.
+  $options = $form['field_allowed_areas']['widget']['#options'];
+  foreach ($options as $tid => $option) {
+    $parents = \Drupal::entityTypeManager()->getStorage('taxonomy_term')->loadParents($tid);
+    if (count($parents) > 0) {
+      unset($options[$tid]);
+    }
+  }
+  $form['field_allowed_areas']['widget']['#options'] = $options;
+}
+
+/**
+ * Implements hook_form_alter to modify the allowed values for a "protected"
+ * content type based on a user's allowed areas.
+ */
+function site_areas_form_alter(&$form, FormStateInterface $form_state, $form_id) {
+  // We only care about nodes with our magic field, so we skip anything else
+  $fo = $form_state->getFormObject();
+  if (!$fo instanceof NodeForm) {
+    return;
+  }
+  $entity = $fo->getEntity();
+  if (!($entity instanceof Node) || !$entity->hasField(_SITE_AREAS_FIELD_NAME)) {
+    return;
+  }
+  $loader = \Drupal::entityTypeManager()->getStorage('taxonomy_term');
+
+  // Get user for area check
+  $user = \Drupal\user\Entity\User::load(\Drupal::currentUser()->id());
+
+  // Get a list of content area term ids for user. Admins are simply given all
+  // ids in the taxonomy so nobody has to manually specify them.
+  $term_ids = array();
+  if ($user->hasPermission('administer content')) {
+    $vid = 'content_areas';
+    $terms = $loader->loadTree($vid);
+    foreach ($terms as $term) {
+      $term_ids[] = $term->tid;
+    }
+  } else {
+    $field_items = $user->get('field_allowed_areas');
+    foreach ($field_items as $field_item) {
+      $term_ids[] = $field_item->getValue()['target_id'];
+    }
+  }
+
+  // Convert term ids into the actual term instances, filtering out child terms
+  $areas = array();
+  foreach ($term_ids as $term_id) {
+    $parents = $loader->loadParents($term_id);
+    if (count($parents) == 0) {
+      $term = $loader->load($term_id);
+      $areas[] = $term;
+    }
+  }
+
+  // Create a new array of options from the allowed areas
+  $opts = array();
+  _site_areas_content_form_options($opts, $areas);
+  $form[_SITE_AREAS_FIELD_NAME]['widget']['#options'] = $opts;
+
+  if (count($opts) == 0) {
+    \Drupal::logger('site_areas')->warning("User has no allowed areas!");
+    return;
+  }
+
+  // If no default value exists, set it to the first allowed item in the list
+  if ($form[_SITE_AREAS_FIELD_NAME]['widget']['#default_value'] === NULL) {
+    $form[_SITE_AREAS_FIELD_NAME]['widget']['#default_value'] = array_keys($opts)[0];
+  }
+}
+
+/**
+ * Adds each term's id and name to the given options array, recursively calling
+ * children with a meaningful prefix (instead of what Drupal does by default,
+ * which is to prefix child terms with "- ")
+ */
+function _site_areas_content_form_options(&$opts, $areas, $prefix = "") {
+  foreach ($areas as $area) {
+    $opts[$area->id()] = $prefix.$area->getName();
+    $children = \Drupal::entityTypeManager()->getStorage('taxonomy_term')->loadChildren($area->id());
+    if (count($children) > 0) {
+      _site_areas_content_form_options($opts, $children, $prefix . $area->getName()." / ");
+    }
+  }
+}
+
+/**
+ * Implements hook_entity_access to deny users the ability to edit or delete
+ * nodes with a site area that isn't in their list of allowed areas
+ */
+function site_areas_entity_access(EntityInterface $entity, $operation, AccountInterface $account) {
+  // We don't try to mess with view operations; everybody can view content no
+  // matter what area of the site it's in so long as other restrictions don't
+  // block access
+  if ($operation == 'view') {
+    return AccessResult::neutral();
+  }
+
+  // Just punt on any admin account - we probably don't even get here anyway
+  if ($account->hasPermission('administer content')) {
+    return AccessResult::neutral();
+  }
+
+  // We also only care about nodes, and only those with our magic field
+  if (!($entity instanceof Node) || !$entity->hasField(_SITE_AREAS_FIELD_NAME)) {
+    return AccessResult::neutral();
+  }
+
+  $l = \Drupal::logger('site_areas');
+  $msg = "access: $operation " . $entity->getType() . " (id " . $entity->id() . ")";
+
+  // We have a destructive operation.  If the content belongs to this user,
+  // we can move to area checks.  Otherwise, the user must be an area admin.
+  if ($entity->getOwner()->getAccountName() != $account->getAccountName() && !$account->hasPermission('administer any node in allowed areas')) {
+    $l->info($msg . " denied: unowned node and not area admin");
+    return AccessResult::forbidden();
+  }
+
+  // The user can manage this node, so we need to make sure the area is in
+  // their list of allowed areas or its children.
+  //
+  // On a match, we don't *allow* this operation; other permissions decide.  We
+  // just don't explicitly block the request.
+  $user = \Drupal\user\Entity\User::load($account->id());
+  $areas = $user->get('field_allowed_areas');
+  $entity_area_id = $entity->get(_SITE_AREAS_FIELD_NAME)->getValue()[0]['target_id'];
+  foreach ($areas as $area) {
+    $term = \Drupal::entityTypeManager()->getStorage('taxonomy_term')->load($area->getValue()['target_id']);
+    if (_site_areas_has_term_id($term, $entity_area_id) === TRUE) {
+      $l->info($msg . ' neutral: user can manage nodes in this area');
+      return AccessResult::neutral();
+    }
+  }
+
+  $l->info($msg . ' denied: not in allowed areas');
+  return AccessResult::forbidden();
+}
+
+/**
+ * Checks the given content area taxonomy terms and all their children to see
+ * if any contain the term used in the given piece of content.
+ */
+function _site_areas_has_term_id($term, $id) {
+  if ($term->id() === $id) {
+    return TRUE;
+  }
+
+  $children = \Drupal::entityTypeManager()->getStorage('taxonomy_term')->loadChildren($term->id());
+  if (count($children) === 0) {
+    return FALSE;
+  }
+  foreach ($children as $child) {
+    if (_site_areas_has_term_id($child, $id) === TRUE) {
+      return TRUE;
+    }
+  }
+
+  return FALSE;
+}

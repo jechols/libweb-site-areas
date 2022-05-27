@@ -1,0 +1,7 @@
+langcode: en
+status: true
+dependencies: {  }
+name: 'Content areas'
+vid: content_areas
+description: 'Locations, sub units, etc. for grouping nodes and keeping users in their own "content silo"'
+weight: 0

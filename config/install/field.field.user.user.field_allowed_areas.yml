@@ -1,0 +1,32 @@
+langcode: en
+status: true
+dependencies:
+  config:
+    - field.storage.user.field_allowed_areas
+    - taxonomy.vocabulary.content_areas
+  module:
+    - user
+id: user.user.field_allowed_areas
+field_name: field_allowed_areas
+entity_type: user
+bundle: user
+label: 'Allowed areas'
+description: 'Areas of the site for which you can create or edit content'
+required: false
+translatable: false
+default_value: {  }
+default_value_callback: ''
+settings:
+  handler: 'default:taxonomy_term'
+  handler_settings:
+    target_bundles:
+      content_areas: content_areas
+    sort:
+      field: name
+      direction: asc
+    auto_create: false
+    auto_create_bundle: ''
+field_type: entity_reference
+content:
+  field_allowed_areas:
+    type: options_buttons

@@ -1,0 +1,20 @@
+langcode: en
+status: true
+dependencies:
+  config:
+    - field.storage.node.field_site_areas__site_area
+    - node.type.page
+id: node.page.field_site_areas__site_area
+field_name: field_site_areas__site_area
+entity_type: node
+bundle: page
+label: 'Site area'
+description: ''
+required: true
+translatable: false
+default_value: {  }
+default_value_callback: ''
+settings:
+  handler: 'default:taxonomy_term'
+  handler_settings: {  }
+field_type: entity_reference

@@ -1,0 +1,7 @@
+name: Site Areas
+type: module
+description: Fields and logic for creating "locked down" content areas
+package: UO Library
+core_version_requirement: ^9
+dependencies:
+  - drupal:taxonomy
